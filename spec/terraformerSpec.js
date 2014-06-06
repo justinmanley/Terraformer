@@ -824,6 +824,16 @@ describe("Intersection", function(){
       expect(mp.intersects(lineString)).toEqual(false);
     });
 
+    it("should return an endpoint when asked for the closest point to an endpoint", function() {
+      expect(lineString.closestPointTo(new Terraformer.Point([ 45, -122 ]))).toEqual(new Terraformer.Point([ 45, -122 ]));
+    });
+
+    it("", function() {
+      var equator = new Terraformer.LineString([[-45,0],[45,0]]);
+      var testPoint = new Terraformer.Point([0, 45]);
+      expect(equator.closestPointTo(testPoint)).toEqual(new Terraformer.Point([0,0]));
+    });
+
   });
 
   describe("Point Within", function(){
@@ -1088,4 +1098,3 @@ describe("Intersection", function(){
   });
 
 });
-

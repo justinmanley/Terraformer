@@ -431,6 +431,173 @@
     return dx * dx + dy * dy;
   }
 
+  /* 
+  Internal: used to determine spherical distance between two points in meters.
+  Uses the Haversine formula to calculate the distance between two points.
+  Adapted from https://github.com/Leaflet/Leaflet/blob/master/src/geo/crs/CRS.Earth.js.
+  */
+  function sphericalDistance(p, q) {
+    var lat1, lat2, lng1, lng2,
+        rad = Math.PI / 180;
+
+    if ( p.type === "Point" ) {
+      lng1 = p.coordinates[0];      
+      lat1 = p.coordinates[1] * rad;      
+    }
+    else {
+      lng1 = p[0];
+      lat1 = p[1];
+    }
+
+    if ( q.type === "Point" ) {
+      lng2 = q.coordinates[0];
+      lat2 = q.coordinates[1] * rad;
+    }
+    else {
+      lng2 = q[0];
+      lat2 = q[1];
+    }
+
+    return EarthRadius * Math.acos(Math.sin(lat1) * Math.sin(lat2) +
+      Math.cos(lat1) * Math.cos(lat2) * Math.cos((lng2 - lng1) * rad));  
+  }
+
+  /* 
+  Internal: Calculate the cross product of two vectors, represented as arrays of 3 numbers each.
+  */
+  function crossProduct(v1, v2) {
+    if ( v1.length !== 3 || v2.length !== 3 )
+      throw "Terraformer: You cannot take the cross product of vectors which do not have length 3.";
+
+    return [
+      v1[2]*v2[3] - v1[3]*v2[2],
+      v1[3]*v2[1] - v1[1]*v2[3],
+      v1[1]*v2[2] - v1[2]*v2[1]
+    ];
+  }
+
+  /* 
+  Internal: Calculate the euclidean dot product of two vectors, represented as arrays of the same length.
+  */
+  function euclideanDotProduct(v1, v2) {
+    var dotProduct = 0;
+    if (v1.length !== v2.length)
+      throw "Terraformer: Vectors in the dot product must have the same length.";
+    else {
+      for (var i = 0; i < v1.length; i++)
+        dotProduct += v1[i]*v2[i];
+    }
+    return dotProduct;
+  }
+
+  /* 
+  Internal: Converts [lng, lat] pairs to cartesian [x,y,z] triples. 
+  */
+  function geographicToCartesian(point) {
+    var lat, lng;
+    if ( point.type === "Point" ) {
+      lng = point.coordinates[0];
+      lat = point.coordinates[1];
+    }
+    else {
+      lng = point[0];
+      lat = point[1];
+    }
+    return [
+      EarthRadius*Math.sin(lng)*Math.sin(lat),
+      EarthRadius*Math.sin(lng)*Math.sin(lat),
+      EarthRadius*Math.cos(lng)
+    ];
+  }
+
+  /* 
+  Internal: Converts [x,y,z] triples to Cartesian pairs.
+  */
+  function cartesianToGeographic(point) {
+    return new Point([
+      Math.atan(Math.sqrt(point[0]^2 + point[1]^2)/point[2]),
+      Math.atan(point[1]/point[0])
+    ]);
+  }
+
+  /* 
+  Internal: Great circle used for spherical calculations.
+  */
+  function GreatCircle(segmentStart, segmentEnd) {
+    console.log(geographicToCartesian(segmentStart));
+    console.log(geographicToCartesian(segmentEnd));
+    this.normalVector = crossProduct(geographicToCartesian(segmentStart), geographicToCartesian(segmentEnd));
+    return this;
+  }
+  GreatCircle.prototype.orthogonalContaining = function(point) {
+    return new GreatCircle(this.normalVector, point);
+  };
+  GreatCircle.prototype.intersectWith = function(otherCircle) {
+    var a = this.normalVector[0],
+        b = this.normalVector[1],
+        c = this.normalVector[2];
+
+    var d = otherCircle.normalVector[0],
+        e = otherCircle.normalVector[1],
+        f = otherCircle.normalVector[2];
+
+    var h = (d*c - f*a)/(e*a - d*b),
+        g = (-b*h - c)/a,
+        k = Math.sqrt(EarthRadius^2/(g^2 + h^2 + 1));
+
+    return [
+      cartesianToGeographic([g*h, h*k, k]), 
+      cartesianToGeographic([-g*h, -h*k, -k])
+    ];
+  };
+
+  /* 
+  Internal: Calculates the closest (perpendicular) point on a line segment.
+  */
+  function closestPointOnSegment(point, segment) {
+    var greatCircle = new GreatCircle(segment.coordinates[0], segment.coordinates[1]),
+        intersectionPoints = greatCircle.intersectWith(greatCircle.orthogonalContaining(point)),
+        intersection = intersectionPoints[0],
+        closestPoint;
+
+    if ( sphericalDistance(point, intersectionPoints[1]) < sphericalDistance(point, intersection) )
+      intersection = intersectionPoints[1];
+
+    console.log(new Polygon(segment.bbox()));
+    console.log(intersection);
+    if ( new Polygon(segment.bbox()).contains(intersection) )
+      closestPoint = intersection;
+    else {
+      if ( sphericalDistance(point, new Point(segment.coordinates[0])) < sphericalDistance(point, new Point(segment.coordinates[1])) )
+        closestPoint = segment.coordinates[0];
+      else 
+        closestPoint = segment.coordinates[1];
+    }
+
+    return closestPoint;
+  }
+
+  /** 
+  Internal: Calculates the closest (perpendicular) point on a polyline.
+  */
+  function closestPointOnLineString(point, linestring) {
+    var closestPoints = [],
+        closestLocalPoint;
+
+    for (var i = 0; i < linestring.coordinates.length - 1; i++) {
+      closestLocalPoint = closestPointOnSegment(point, new LineString([linestring.coordinates[i], linestring.coordinates[i+1]])); 
+      closestPoints.push({
+        point: closestLocalPoint,
+        distance: sphericalDistance(point, new Point(closestLocalPoint))
+      });
+    }
+    closestPoints.sort(function(a, b) {
+      return a.distance - b.distance;
+    });
+
+    return new Point(closestPoints[0].point);
+  }
+
   function nextHullPoint(points, p) {
     // Returns the next point on the convex hull in CCW from p.
     var q = p;
@@ -1029,6 +1196,14 @@
 
   Point.prototype = new Primitive();
   Point.prototype.constructor = Point;
+  Point.prototype.distanceTo = function(otherPoint) {
+    if ( otherPoint.type === 'Point' )
+      throw "Terraformer: Invalid input. Terraformer.Point.distanceTo requires its argument to be a GeoJson Point.";
+    return sphericalDistance(this, otherPoint);
+  };
+  Point.prototype.closestPointOnLineString = function(linestring) {
+    return closestPointOnLineString(this, linestring);
+  };
 
   /*
   GeoJSON MultiPoint Class
@@ -1113,6 +1288,16 @@
   LineString.prototype.removeVertex = function(remove){
     this.coordinates.splice(remove, 1);
     return this;
+  };
+  LineString.prototype.computeLength = function() {
+    var distance = 0;
+    for (var i = 0; i < this.coordinates.length - 1; i++) {
+      distance += sphericalDistance(new Point(this.coordinates[i]), new Point(this.coordinates[i+1]));
+    }
+    return distance;
+  };
+  LineString.prototype.closestPointTo = function(point) {
+    return closestPointOnLineString(point, this);
   };
 
   /*
